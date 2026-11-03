@@ -1,0 +1,9 @@
+# 统一换行：源码存 LF，Windows 批处理检出为 CRLF
+* text=auto
+*.py   text eol=lf
+*.md   text eol=lf
+*.spec text eol=lf
+*.bat  text eol=crlf
+*.onnx binary
+*.ico  binary
+*.png  binary
