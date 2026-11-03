@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from core.config import APP_NAME, APP_VERSION
 from core.detector import STATE_AWAY, STATE_PAUSED, STATE_PRESENT
+from core.payroll import countdown_text, money, snapshot as pay_snapshot
 from core.schedule import DAY_SHORT, days_set, describe_now, in_window
 from ui.theme import ACCENT, OK, QSS, SUB, WARN
 
@@ -83,6 +84,7 @@ class SettingsWindow(QWidget):
         self._tab_actions()
         self._tab_rules()
         self._tab_schedule()
+        self._tab_pay()
         self._tab_preview()
 
         # ---------------- 底部按钮
@@ -313,6 +315,116 @@ class SettingsWindow(QWidget):
         self.tabs.addTab(page, "  定时计划  ")
         self._refresh_schedule_status()
 
+    # ------------------------------------------------------------ 上班鼓励器页
+    def _tab_pay(self) -> None:
+        page, lay = self._scroll_page()
+
+        card, cl = self._card("黑屏显示")
+        self.pay_check = self._check(
+            "pay_enabled",
+            "黑屏时显示今天赚了多少钱、还剩多久下班",
+            cl,
+        )
+
+        money_row = QHBoxLayout()
+        money_row.setSpacing(10)
+        money_row.addWidget(QLabel("月薪"))
+        self.pay_money = QLineEdit()
+        self.pay_money.setPlaceholderText("例如 12000")
+        self.pay_money.setMaxLength(9)
+        self.pay_money.setFixedWidth(150)
+        monthly = float(self.cfg["pay_monthly"])
+        self.pay_money.setText(f"{monthly:g}" if monthly > 0 else "")
+        self.pay_money.textChanged.connect(self._on_pay_money)
+        money_row.addWidget(self.pay_money)
+        money_row.addWidget(QLabel("元 / 月"))
+        money_row.addStretch()
+        cl.addLayout(money_row)
+
+        days_row = QHBoxLayout()
+        days_row.setSpacing(10)
+        days_row.addWidget(QLabel("每月计薪天数"))
+        self.pay_mdays = QLineEdit()
+        self.pay_mdays.setFixedWidth(80)
+        self.pay_mdays.setText(f"{float(self.cfg['pay_month_days']):g}")
+        self.pay_mdays.textChanged.connect(self._on_pay_mdays)
+        days_row.addWidget(self.pay_mdays)
+        days_row.addWidget(QLabel("天"))
+        days_row.addStretch()
+        cl.addLayout(days_row)
+
+        mdays_tip = QLabel(
+            "5 天工作制按 21.75 天（法定月计薪天数），单休约 26 天，"
+            "大小周取中间值。这个数字只影响时薪高低，不影响上下班判断。"
+        )
+        mdays_tip.setObjectName("hint")
+        mdays_tip.setWordWrap(True)
+        cl.addWidget(mdays_tip)
+        lay.addWidget(card)
+
+        card, cl = self._card("上下班时间")
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        row.addWidget(QLabel("从"))
+        self.pay_start_edit = self._time_edit("pay_start", schedule=False)
+        row.addWidget(self.pay_start_edit)
+        row.addWidget(QLabel("到"))
+        self.pay_end_edit = self._time_edit("pay_end", schedule=False)
+        row.addWidget(self.pay_end_edit)
+        row.addStretch()
+        cl.addLayout(row)
+
+        pick = {int(d) for d in (self.cfg["pay_days"] or [])}
+        day_row = QHBoxLayout()
+        day_row.setSpacing(6)
+        self.pay_day_boxes: list[QPushButton] = []
+        for i, name in enumerate(DAY_SHORT):
+            btn = QPushButton(name)
+            btn.setObjectName("day")
+            btn.setCheckable(True)
+            btn.setChecked(i in pick)
+            btn.setFixedSize(38, 30)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.toggled.connect(lambda v, d=i: self._set_pay_day(d, v))
+            day_row.addWidget(btn)
+            self.pay_day_boxes.append(btn)
+        day_row.addStretch()
+        cl.addLayout(day_row)
+
+        quick = QHBoxLayout()
+        quick.setSpacing(6)
+        for label, picks in (("每天", list(range(7))), ("工作日", list(range(5))),
+                             ("单休", list(range(6)))):
+            btn = QPushButton(label)
+            btn.setObjectName("ghost")
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.clicked.connect(lambda _=False, p=picks: self._apply_pay_days(p))
+            quick.addWidget(btn)
+        quick.addStretch()
+        cl.addLayout(quick)
+        lay.addWidget(card)
+
+        card, cl = self._card("换算结果")
+        self.pay_preview = QLabel("")
+        self.pay_preview.setObjectName("metric")
+        self.pay_preview.setWordWrap(True)
+        cl.addWidget(self.pay_preview)
+
+        tip = QLabel(
+            "钱按“坐在工位上的时间”连续折算：今天已赚 = 日薪 × 已过去的比例，"
+            "所以黑屏上的数字会一秒一秒往上爬。午休也算在岗时段内，想扣掉就把"
+            "上班时间往后调，或者把每天区间缩短。\n\n"
+            "想先看看效果，点底部的「测试触发」，黑屏会立刻弹出来，3 秒后自动收起。"
+        )
+        tip.setObjectName("hint")
+        tip.setWordWrap(True)
+        cl.addWidget(tip)
+        lay.addWidget(card)
+
+        lay.addStretch()
+        self.tabs.addTab(page, "  上班鼓励器  ")
+        self._refresh_pay_preview()
+
     # ------------------------------------------------------------ 预览页
     def _tab_preview(self) -> None:
         page = QWidget()
@@ -438,7 +550,7 @@ class SettingsWindow(QWidget):
         lay.addLayout(row)
         return slider
 
-    def _time_edit(self, key: str) -> QTimeEdit:
+    def _time_edit(self, key: str, schedule: bool = True) -> QTimeEdit:
         edit = QTimeEdit()
         edit.setDisplayFormat("HH:mm")
         t = QTime.fromString(str(self.cfg[key]), "HH:mm")
@@ -447,8 +559,11 @@ class SettingsWindow(QWidget):
 
         def on_change(t: QTime) -> None:
             self.cfg[key] = t.toString("HH:mm")
-            self._refresh_schedule_status()
-            self.app.check_schedule_now()
+            if schedule:
+                self._refresh_schedule_status()
+                self.app.check_schedule_now()
+            else:
+                self._refresh_pay_preview()
 
         edit.timeChanged.connect(on_change)
         return edit
@@ -485,6 +600,61 @@ class SettingsWindow(QWidget):
             btn.blockSignals(True)
             btn.setChecked(i in days)
             btn.blockSignals(False)
+
+    # ------------------------------------------------------------ 上班鼓励器
+    def _on_pay_money(self, text: str) -> None:
+        digits = "".join(ch for ch in text if ch.isdigit())
+        self.cfg["pay_monthly"] = float(digits) if digits else 0.0
+        self._refresh_pay_preview()
+
+    def _on_pay_mdays(self, text: str) -> None:
+        raw = text.strip()
+        try:
+            value = float(raw)
+        except ValueError:
+            value = 0.0
+        # 越界先存默认值，等用户输完再说；不能写 0 进去，否则时薪会变成无穷大
+        self.cfg["pay_month_days"] = value if 1.0 <= value <= 31.0 else 21.75
+        self._refresh_pay_preview()
+
+    def _set_pay_day(self, day: int, on: bool) -> None:
+        days = {int(d) for d in (self.cfg["pay_days"] or [])}
+        if on:
+            days.add(day)
+        else:
+            days.discard(day)
+        if not days:
+            days = set(range(7))       # 同定时计划：空集合等于每天
+            self._sync_pay_days(days)
+        self.cfg["pay_days"] = sorted(days)
+        self._refresh_pay_preview()
+
+    def _apply_pay_days(self, picks) -> None:
+        days = {int(d) for d in picks}
+        self._sync_pay_days(days)
+        self.cfg["pay_days"] = sorted(days)
+        self._refresh_pay_preview()
+
+    def _sync_pay_days(self, days: set[int]) -> None:
+        for i, btn in enumerate(self.pay_day_boxes):
+            btn.blockSignals(True)
+            btn.setChecked(i in days)
+            btn.blockSignals(False)
+
+    def _refresh_pay_preview(self) -> None:
+        if not hasattr(self, "pay_preview"):
+            return
+        snap = pay_snapshot(self.cfg)
+        if not snap.ok:
+            text = "还没填月薪，黑屏上不会出现工资板。填好后这里会实时显示换算结果。"
+        else:
+            text = (
+                f"日薪 {money(snap.daily)}  =  月薪 {money(snap.monthly)} ÷ {snap.days:g} 天\n"
+                f"时薪 {money(snap.hourly)}  =  日薪 ÷ {snap.hours:g} 小时\n"
+                f"{countdown_text(snap)}   ·   今天已赚 {money(snap.earned)}"
+            )
+        if self.pay_preview.text() != text:
+            self.pay_preview.setText(text)
 
     def _toggle_preview(self, on: bool) -> None:
         self._preview_on = on
@@ -545,6 +715,7 @@ class SettingsWindow(QWidget):
 
         self._refresh_enable_btn()
         self._refresh_schedule_status()
+        self._refresh_pay_preview()
 
         if self.cfg["calibrated"]:
             self.cal_label.setText("已校准 · 当前坐姿已设为基准")

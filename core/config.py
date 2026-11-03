@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "视线守卫"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 
 
 def app_root() -> Path:
@@ -86,16 +86,24 @@ DEFAULTS = {
     "wake_rearm_seconds": 0.0,      # 解除后多久没键鼠输入且人仍不在，重新黑屏
                                     # 0 = 不重新黑屏（下次真正离开才再触发）
 
+    # 上班鼓励器：黑屏时把"今天赚了多少、还剩多久下班"打在屏幕上
+    "pay_enabled": True,
+    "pay_monthly": 0.0,             # 月薪（元）；0 = 还没填，黑屏上不显示
+    "pay_month_days": 21.75,        # 每月计薪天数：5 天工作制 21.75，单休约 26
+    "pay_start": "09:00",
+    "pay_end": "18:00",
+    "pay_days": [0, 1, 2, 3, 4],    # 周一 = 0；空列表按"每天"处理
+
     # 其他
     "show_preview": False,
     "preview_mirror": True,
     "sound_enabled": False,
 
     # 配置结构版本，用于升级时修正历史遗留的极端参数
-    "config_version": 3,
+    "config_version": 4,
 }
 
-CONFIG_VERSION = 3
+CONFIG_VERSION = 4
 
 # v2 时期的黑屏提示文案，升级时替换掉
 _OLD_HINT = "按 ESC 可手动关闭"
@@ -138,6 +146,16 @@ def _migrate(data: dict) -> dict:
             data["black_screen_hint"] = DEFAULTS["black_screen_hint"]
         data.setdefault("wake_on_input", True)
         data.setdefault("wake_rearm_seconds", 0.0)
+
+    if version < 4:
+        # v4 加入上班鼓励器。上班时间默认继承定时计划——一个人设定的"运行时段"
+        # 基本就是他上下班的时间，省得重新填一遍；之后在设置里随时能改。
+        data.setdefault("pay_enabled", True)
+        data.setdefault("pay_monthly", 0.0)
+        data.setdefault("pay_month_days", 21.75)
+        data.setdefault("pay_start", data.get("schedule_start", "09:00"))
+        data.setdefault("pay_end", data.get("schedule_end", "18:00"))
+        data.setdefault("pay_days", list(data.get("schedule_days") or DEFAULTS["pay_days"]))
 
     data["config_version"] = CONFIG_VERSION
     return data

@@ -15,6 +15,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
+from core import payroll
 from core.actions import is_autostart_on, set_autostart
 from core.activity import idle_seconds
 from core.config import APP_NAME, Config, app_root
@@ -117,11 +118,22 @@ class DesktopApp(QObject):
         )
 
     # ------------------------------------------------------------ 触发
+    def _pay_snapshot(self):
+        """黑屏上工资板的数据源。关掉或没填月薪时返回 None，遮罩就只显示
+        原来的文字。每次调用都重新算，所以黑屏期间改设置会立刻生效。"""
+        if not self.cfg["pay_enabled"]:
+            return None
+        try:
+            return payroll.snapshot(self.cfg)
+        except Exception:
+            return None
+
     def _show_black_screen(self) -> None:
         self.overlay.show_overlay(
             str(self.cfg["black_screen_text"]),
             str(self.cfg["black_screen_hint"]),
             wake_on_input=bool(self.cfg["wake_on_input"]),
+            pay_provider=self._pay_snapshot,
         )
 
     def _on_leave(self, reasons: list[str]) -> None:

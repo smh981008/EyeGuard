@@ -2,11 +2,12 @@
 """全屏黑屏遮罩（Qt 实现，覆盖全部显示器，淡入淡出）。"""
 from __future__ import annotations
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter
 from PySide6.QtWidgets import QWidget
 
 from core.actions import virtual_screen_rect
+from core.payroll import countdown_text, money, rate_line
 from core.wake import WakeWatcher
 
 
@@ -36,6 +37,13 @@ class ScreenOverlay(QWidget):
         self._closing = False
         self._wake_on_input = True
 
+        # 上班鼓励器：_pay_provider 每次调用返回一个 PaySnapshot 或 None
+        self._pay_provider = None
+        self._pay = None
+        self._pay_timer = QTimer(self)
+        self._pay_timer.setInterval(1000)
+        self._pay_timer.timeout.connect(self._tick_pay)
+
         self._wake = WakeWatcher()
         self._wake_timer = QTimer(self)
         self._wake_timer.setInterval(self.POLL_MS)
@@ -51,12 +59,14 @@ class ScreenOverlay(QWidget):
 
     # ------------------------------------------------------------ 显示/隐藏
     def show_overlay(
-        self, text: str = "", hint: str = "", wake_on_input: bool = True
+        self, text: str = "", hint: str = "", wake_on_input: bool = True,
+        pay_provider=None,
     ) -> None:
         self._title = text
         self._hint = hint
         self._closing = False
         self._wake_on_input = bool(wake_on_input)
+        self._pay_provider = pay_provider
 
         x, y, w, h = virtual_screen_rect()
         self.setGeometry(x, y, w, h)
@@ -74,6 +84,13 @@ class ScreenOverlay(QWidget):
             self._wake_timer.start()
         else:
             self._wake_timer.stop()
+
+        # 薪资每秒重算一次：黑屏上那串钱要一秒一秒往上爬
+        self._tick_pay()
+        if self._pay is not None:
+            self._pay_timer.start()
+        else:
+            self._pay_timer.stop()
 
         self._anim.stop()
         self._anim.setStartValue(0.0)
@@ -97,6 +114,19 @@ class ScreenOverlay(QWidget):
     def _stop_watch(self) -> None:
         self._wake_timer.stop()
         self._wake.disarm()
+        self._pay_timer.stop()
+
+    # ------------------------------------------------------------ 上班鼓励器
+    def _tick_pay(self) -> None:
+        snap = None
+        if self._pay_provider is not None:
+            try:
+                snap = self._pay_provider()
+            except Exception:
+                snap = None
+        self._pay = snap if (snap is not None and snap.ok) else None
+        if self.isVisible():
+            self.update()
 
     # ------------------------------------------------------------ 唤醒
     def _poll_wake(self) -> None:
@@ -137,6 +167,11 @@ class ScreenOverlay(QWidget):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor(0, 0, 0))
 
+        if self._pay is not None:
+            self._paint_pay(p)
+            self._paint_footer(p)
+            return
+
         if not self._title:
             return
 
@@ -152,6 +187,59 @@ class ScreenOverlay(QWidget):
             p.setFont(QFont("Microsoft YaHei UI", 11))
             hint_rect = self.rect().adjusted(0, 90, 0, 90)
             p.drawText(hint_rect, Qt.AlignCenter, self._hint)
+
+    def _paint_pay(self, p: QPainter) -> None:
+        """黑屏正中的工资板：今日已赚 / 时薪 / 进度条 / 距下班。"""
+        snap = self._pay
+        w, h = self.width(), self.height()
+        cx, cy = w // 2, h // 2
+
+        # 标题小字
+        p.setPen(QColor(96, 101, 108))
+        f = QFont("Microsoft YaHei UI", 12)
+        f.setLetterSpacing(QFont.PercentageSpacing, 112)
+        p.setFont(f)
+        p.drawText(QRect(0, cy - 210, w, 26), Qt.AlignCenter, "今 日 已 赚")
+
+        # 金额：整个屏幕最亮的东西
+        p.setPen(QColor(214, 160, 78))
+        f = QFont("Microsoft YaHei UI", 46)
+        f.setWeight(QFont.DemiBold)
+        p.setFont(f)
+        p.drawText(QRect(0, cy - 175, w, 92), Qt.AlignCenter, money(snap.earned))
+
+        # 时薪 / 每分钟
+        p.setPen(QColor(88, 93, 100))
+        p.setFont(QFont("Microsoft YaHei UI", 11))
+        p.drawText(QRect(0, cy - 70, w, 24), Qt.AlignCenter, rate_line(snap))
+
+        # 今日进度条
+        bar_w, bar_h = 420, 4
+        x0, y0 = cx - bar_w // 2, cy - 20
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(28, 30, 34))
+        p.drawRoundedRect(QRect(x0, y0, bar_w, bar_h), 2, 2)
+        p.setBrush(QColor(214, 160, 78))
+        done = int(bar_w * max(0.0, min(1.0, snap.progress)))
+        if done > 0:
+            p.drawRoundedRect(QRect(x0, y0, done, bar_h), 2, 2)
+
+        # 距下班
+        p.setPen(QColor(132, 138, 146))
+        p.setFont(QFont("Microsoft YaHei UI", 15))
+        p.drawText(QRect(0, cy + 0, w, 40), Qt.AlignCenter, countdown_text(snap))
+
+    def _paint_footer(self, p: QPainter) -> None:
+        """黑屏底部的原提示语，压得很暗，不抢工资的视线。"""
+        w, h = self.width(), self.height()
+        if self._title:
+            p.setPen(QColor(46, 49, 54))
+            p.setFont(QFont("Microsoft YaHei UI", 11))
+            p.drawText(QRect(0, h - 96, w, 24), Qt.AlignCenter, self._title)
+        if self._hint:
+            p.setPen(QColor(38, 40, 45))
+            p.setFont(QFont("Microsoft YaHei UI", 10))
+            p.drawText(QRect(0, h - 68, w, 22), Qt.AlignCenter, self._hint)
 
 
 def primary_screen_size() -> tuple[int, int]:
