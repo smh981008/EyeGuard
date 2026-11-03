@@ -243,6 +243,23 @@ python -m PyInstaller --noconfirm --clean --windowed --name EyeGuard ^
 
 ---
 
+## 发一个版本
+
+版本号写在 `core/config.py` 的 `APP_VERSION`，改完用 `EyeGuard.spec` 打包，再把 `dist/EyeGuard`
+压成带版本号的 zip 传到 GitHub Release：
+
+```bash
+python -m PyInstaller EyeGuard.spec --noconfirm --distpath dist --workpath build
+```
+
+压缩包格式为 `EyeGuard-v<版本>-win64.zip`，内含 `EyeGuard/` 目录（`EyeGuard.exe`、`_internal/`、
+`使用说明.md`），**不打包 `config.json`** —— 那是本机的校准值和阈值，不该发给别人，也让首次
+启动能走默认参数并提示校准。
+
+已有版本见 [Releases](https://github.com/smh981008/EyeGuard/releases)。
+
+---
+
 ## 隐私
 
 画面只在内存里处理，不写盘、不上传、不联网。关掉预览后连帧拷贝都省了。

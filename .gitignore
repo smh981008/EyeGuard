@@ -10,6 +10,9 @@ venv/
 build/
 dist/
 
+# 发布用压缩包（体积大，走 GitHub Release 分发；说明文件仍入库）
+release/*.zip
+
 # 本机个人配置：摄像头序号、校准基准、阈值调校都因人而异，不该进仓库
 config.json
 
