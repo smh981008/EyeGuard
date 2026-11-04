@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
 
 from core.config import APP_NAME, APP_VERSION
 from core.detector import STATE_AWAY, STATE_PAUSED, STATE_PRESENT
-from core.payroll import countdown_text, money, snapshot as pay_snapshot
+from core.payroll import countdown_text, money, schedule_line, snapshot as pay_snapshot
 from core.schedule import DAY_SHORT, days_set, describe_now, in_window
 from ui.theme import ACCENT, OK, QSS, SUB, WARN
 
@@ -374,6 +374,28 @@ class SettingsWindow(QWidget):
         row.addStretch()
         cl.addLayout(row)
 
+        # 午休分段：勾上之后，中间那段不计工时，进度条会停住
+        self.pay_break_check = self._check(
+            "pay_break_enabled", "中间有午休，下午再来一段（休息时间不算工时）", cl
+        )
+        self.pay_break_check.toggled.connect(self._toggle_pay_break)
+
+        holder = QWidget()
+        hl = QHBoxLayout(holder)
+        hl.setContentsMargins(0, 0, 0, 0)
+        hl.setSpacing(10)
+        hl.addSpacing(22)
+        hl.addWidget(QLabel("下午从"))
+        self.pay_start2_edit = self._time_edit("pay_start2", schedule=False)
+        hl.addWidget(self.pay_start2_edit)
+        hl.addWidget(QLabel("到"))
+        self.pay_end2_edit = self._time_edit("pay_end2", schedule=False)
+        hl.addWidget(self.pay_end2_edit)
+        hl.addStretch()
+        cl.addWidget(holder)
+        self.pay_break_box = holder
+        holder.setVisible(bool(self.cfg["pay_break_enabled"]))
+
         pick = {int(d) for d in (self.cfg["pay_days"] or [])}
         day_row = QHBoxLayout()
         day_row.setSpacing(6)
@@ -412,8 +434,10 @@ class SettingsWindow(QWidget):
 
         tip = QLabel(
             "钱按“坐在工位上的时间”连续折算：今天已赚 = 日薪 × 已过去的比例，"
-            "所以黑屏上的数字会一秒一秒往上爬。午休也算在岗时段内，想扣掉就把"
-            "上班时间往后调，或者把每天区间缩短。\n\n"
+            "所以黑屏上的数字会一秒一秒往上爬。\n\n"
+            "勾上「中间有午休」就是分段算：08:30–11:30 + 14:00–17:30 一共 6.5 小时，"
+            "午休那一个半小时不产生收入，黑屏上的进度条和金额会停住，下午开工再接着走。"
+            "不勾则从上班到下班一口气算，午休也算工时。\n\n"
             "想先看看效果，点底部的「测试触发」，黑屏会立刻弹出来，3 秒后自动收起。"
         )
         tip.setObjectName("hint")
@@ -641,6 +665,11 @@ class SettingsWindow(QWidget):
             btn.setChecked(i in days)
             btn.blockSignals(False)
 
+    def _toggle_pay_break(self, on: bool) -> None:
+        self.cfg["pay_break_enabled"] = bool(on)
+        self.pay_break_box.setVisible(bool(on))
+        self._refresh_pay_preview()
+
     def _refresh_pay_preview(self) -> None:
         if not hasattr(self, "pay_preview"):
             return
@@ -649,6 +678,7 @@ class SettingsWindow(QWidget):
             text = "还没填月薪，黑屏上不会出现工资板。填好后这里会实时显示换算结果。"
         else:
             text = (
+                f"时段 {schedule_line(self.cfg)}，共 {snap.hours:g} 小时\n"
                 f"日薪 {money(snap.daily)}  =  月薪 {money(snap.monthly)} ÷ {snap.days:g} 天\n"
                 f"时薪 {money(snap.hourly)}  =  日薪 ÷ {snap.hours:g} 小时\n"
                 f"{countdown_text(snap)}   ·   今天已赚 {money(snap.earned)}"

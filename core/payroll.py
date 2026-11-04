@@ -3,11 +3,13 @@
 
 换算口径：
     日薪 = 月薪 ÷ 每月计薪天数
-    时薪 = 日薪 ÷ 每日在岗小时（= 下班时间 - 上班时间）
+    时薪 = 日薪 ÷ 每日在岗小时
 
-"在岗小时"就是打卡时段本身，午休也算在里面 —— 这样"今天赚了多少"等于
-"你在工位上坐了多久"，看数字涨才符合直觉。想按实际工时算，把上班时间往后
-调（比如 09:00 改成 10:00）或者直接调小每日区间即可。
+"每日在岗小时"按上下班时段累加，支持中间挖掉一段（午休）：
+    08:30–11:30 + 14:00–17:30  ->  3 + 3.5 = 6.5 小时
+
+午休那段时间不产生收入，进度条会停住、金额不动 —— 这样"今天赚了多少"始终
+等于"你实际干活干了多久"，比把午休也算成工时更经得起推敲。
 
 所有钱都按当前这一刻连续折算，不做"整点跳一次"，所以黑屏上的数字会一秒
 一秒往上走。
@@ -20,6 +22,7 @@ from datetime import date, datetime, time, timedelta
 STATUS_UNSET = "unset"      # 还没填月薪
 STATUS_BEFORE = "before"    # 工作日，还没到上班时间
 STATUS_WORKING = "working"  # 正在上班
+STATUS_LUNCH = "lunch"      # 两个时段之间的休息（午休）
 STATUS_AFTER = "after"      # 已下班，今天的钱赚满了
 STATUS_OFFDAY = "offday"    # 今天不是工作日
 
@@ -51,6 +54,36 @@ def parse_hhmm(text, fallback: str = "09:00") -> time:
     return time(9, 0)
 
 
+def _minutes(t: time) -> int:
+    return t.hour * 60 + t.minute
+
+
+def _span(a: time, b: time) -> int:
+    """a 到 b 的分钟数；b 早于 a 视为跨夜。起止相同算 0。"""
+    m1, m2 = _minutes(a), _minutes(b)
+    if m1 == m2:
+        return 0
+    if m2 < m1:
+        m2 += 24 * 60
+    return m2 - m1
+
+
+def segments(cfg) -> list[tuple[time, time]]:
+    """当天的在岗时段列表。分段开关关掉时就是一段。"""
+    s1 = parse_hhmm(cfg.get("pay_start"), "09:00")
+    e1 = parse_hhmm(cfg.get("pay_end"), "18:00")
+    out = [(s1, e1)]
+
+    if bool(cfg.get("pay_break_enabled", False)):
+        s2 = parse_hhmm(cfg.get("pay_start2"), "14:00")
+        e2 = parse_hhmm(cfg.get("pay_end2"), "17:30")
+        # 只有"下午开始晚于上午结束、且下午结束晚于下午开始"才认第二段，
+        # 否则说明时间填岔了，退回一段，绝不算出负数工时。
+        if _minutes(s2) > _minutes(e1) and _minutes(e2) > _minutes(s2):
+            out.append((s2, e2))
+    return out
+
+
 def work_days(cfg) -> set[int]:
     """工作日集合，周一 = 0。一天都没勾按"每天"处理。"""
     raw = cfg.get("pay_days") or []
@@ -72,15 +105,9 @@ def month_days(cfg) -> float:
 
 
 def hours_per_day(cfg) -> float:
-    """每日在岗小时。下班早于上班视为跨夜。"""
-    s = parse_hhmm(cfg.get("pay_start"), "09:00")
-    e = parse_hhmm(cfg.get("pay_end"), "18:00")
-    sm, em = s.hour * 60 + s.minute, e.hour * 60 + e.minute
-    if em == sm:
-        return 8.0                     # 起止相同没法算，按 8 小时兜底
-    if em < sm:
-        em += 24 * 60                  # 跨夜
-    return (em - sm) / 60.0
+    """每日在岗小时 = 各时段之和（午休不算）。"""
+    total = sum(_span(a, b) for a, b in segments(cfg)) / 60.0
+    return total if total > 0 else 8.0
 
 
 # ------------------------------------------------------------------ 快照
@@ -95,7 +122,7 @@ class PaySnapshot:
     days: int              # 每月计薪天数
     hours: float           # 每日在岗小时
     earned: float = 0.0    # 今天已经赚到（元）
-    remain: float = 0.0    # 距离下班还有多少秒
+    remain: float = 0.0    # 距离下班还有多少"要干活"的秒数
     progress: float = 0.0  # 今天走完的比例 0~1
 
     @property
@@ -107,54 +134,75 @@ class PaySnapshot:
         return self.hourly / 60.0
 
 
+def _intervals(day: date, segs: list[tuple[time, time]]) -> list[tuple[datetime, datetime]]:
+    """把某一天的时段落成具体区间；跨夜的段落到第二天。"""
+    out = []
+    for a, b in segs:
+        start = datetime.combine(day, a)
+        end_day = day + timedelta(days=1) if _minutes(b) <= _minutes(a) else day
+        out.append((start, datetime.combine(end_day, b)))
+    return out
+
+
+def _evaluate(
+    ivs: list[tuple[datetime, datetime]], now: datetime,
+    daily: float, base: dict,
+) -> PaySnapshot:
+    total = sum((b - a).total_seconds() for a, b in ivs) or 1.0
+    elapsed = 0.0
+    for a, b in ivs:
+        if now >= b:
+            elapsed += (b - a).total_seconds()
+        elif now > a:
+            elapsed += (now - a).total_seconds()
+    frac = min(1.0, max(0.0, elapsed / total))
+    inside = any(a <= now < b for a, b in ivs)
+
+    if now < ivs[0][0]:
+        status = STATUS_BEFORE
+    elif now >= ivs[-1][1]:
+        status = STATUS_AFTER
+    elif inside:
+        status = STATUS_WORKING
+    else:
+        status = STATUS_LUNCH
+
+    return PaySnapshot(
+        status=status, earned=daily * frac,
+        remain=max(0.0, total - elapsed), progress=frac, **base,
+    )
+
+
 def snapshot(cfg, now: datetime | None = None) -> PaySnapshot:
     """算出此刻的薪资快照。没填月薪时 status = unset。"""
     now = now or datetime.now()
     monthly = _num(cfg.get("pay_monthly"), 0.0)
     mdays = month_days(cfg)
+    segs = segments(cfg)
     hours = hours_per_day(cfg)
-    s = parse_hhmm(cfg.get("pay_start"), "09:00")
-    e = parse_hhmm(cfg.get("pay_end"), "18:00")
 
     daily = monthly / mdays if monthly > 0 else 0.0
     hourly = daily / hours if daily > 0 else 0.0
 
     base = dict(
         monthly=monthly, daily=daily, hourly=hourly,
-        start=s, end=e, days=mdays, hours=hours,
+        start=segs[0][0], end=segs[-1][1], days=mdays, hours=hours,
     )
     if monthly <= 0:
         return PaySnapshot(status=STATUS_UNSET, **base)
 
     days = work_days(cfg)
-    cross = (e.hour * 60 + e.minute) <= (s.hour * 60 + s.minute)
     today = now.date()
 
-    def shift_of(day: date) -> tuple[datetime, datetime]:
-        start_dt = datetime.combine(day, s)
-        end_day = day + timedelta(days=1) if cross else day
-        return start_dt, datetime.combine(end_day, e)
+    # 昨天开的班可能还没结束（跨夜），先看它
+    yesterday = today - timedelta(days=1)
+    if yesterday.weekday() in days:
+        ivs = _intervals(yesterday, segs)
+        if ivs[0][0] <= now < ivs[-1][1]:
+            return _evaluate(ivs, now, daily, base)
 
-    # 先找"此刻正在进行"的班次：跨夜的班次昨天开的，现在还在上。
-    for day in (today - timedelta(days=1), today):
-        if day.weekday() not in days:
-            continue
-        st, en = shift_of(day)
-        if st <= now < en:
-            span = (en - st).total_seconds() or 1.0
-            frac = (now - st).total_seconds() / span
-            frac = min(1.0, max(0.0, frac))
-            return PaySnapshot(
-                status=STATUS_WORKING, earned=daily * frac, remain=(en - now).total_seconds(),
-                progress=frac, **base,
-            )
-
-    # 没有进行中的班次：看今天本身有没有班
     if today.weekday() in days:
-        st, en = shift_of(today)
-        if now < st:
-            return PaySnapshot(status=STATUS_BEFORE, remain=(en - st).total_seconds(), **base)
-        return PaySnapshot(status=STATUS_AFTER, earned=daily, progress=1.0, **base)
+        return _evaluate(_intervals(today, segs), now, daily, base)
 
     return PaySnapshot(status=STATUS_OFFDAY, **base)
 
@@ -180,6 +228,8 @@ def countdown_text(snap: PaySnapshot) -> str:
     """黑屏上那行倒计时 / 状态。"""
     if snap.status == STATUS_WORKING:
         return f"距下班 {human_duration(snap.remain)}"
+    if snap.status == STATUS_LUNCH:
+        return f"午休中 · 距下班 {human_duration(snap.remain)}"
     if snap.status == STATUS_BEFORE:
         return f"还没开工 · {snap.start.strftime('%H:%M')} 开始"
     if snap.status == STATUS_AFTER:
@@ -193,12 +243,21 @@ def rate_line(snap: PaySnapshot) -> str:
     return f"时薪 {money(snap.hourly)} · 每分钟 {money(snap.per_minute)}"
 
 
+def schedule_line(cfg) -> str:
+    segs = segments(cfg)
+    body = " + ".join(f"{a.strftime('%H:%M')}–{b.strftime('%H:%M')}" for a, b in segs)
+    if len(segs) == 2:
+        return f"{body}，中间休息 {segs[0][1].strftime('%H:%M')}–{segs[1][0].strftime('%H:%M')}"
+    return body
+
+
 def summary(cfg, now: datetime | None = None) -> str:
     """给设置页看的一句话摘要。"""
     snap = snapshot(cfg, now)
     if not snap.ok:
         return "还没填月薪，黑屏上不会显示。"
     return (
+        f"时段 {schedule_line(cfg)}，共 {snap.hours:g} 小时。\n"
         f"日薪 {money(snap.daily)} = {money(snap.monthly)} ÷ {snap.days:g} 天；"
         f"时薪 {money(snap.hourly)} = 日薪 ÷ {snap.hours:g} 小时。\n"
         f"现在是「{countdown_text(snap)}」，今天已赚 {money(snap.earned)}。"
@@ -207,32 +266,46 @@ def summary(cfg, now: datetime | None = None) -> str:
 
 # ------------------------------------------------------------------ 自测
 if __name__ == "__main__":
+    # 2026-11-03 是周二，11-07 是周六
     base = {
-        "pay_monthly": 17400, "pay_month_days": 21.75,
-        "pay_start": "09:00", "pay_end": "18:00", "pay_days": [0, 1, 2, 3, 4],
+        "pay_monthly": 10000, "pay_month_days": 21.75,
+        "pay_start": "08:30", "pay_end": "11:30",
+        "pay_break_enabled": True, "pay_start2": "14:00", "pay_end2": "17:30",
+        "pay_days": [0, 1, 2, 3, 4],
     }
 
     def show(label: str, cfg: dict, when: datetime) -> None:
         s = snapshot(cfg, when)
         print(
-            f"{label:<26} {when:%m-%d %a %H:%M}  "
-            f"{s.status:<8} earned={s.earned:>8.2f}  remain={int(s.remain):>6}s  "
-            f"prog={s.progress:5.1%}  |  {countdown_text(s)}"
+            f"{label:<24} {when:%m-%d %a %H:%M}  {s.status:<8} "
+            f"earned={s.earned:>8.2f}  remain={int(s.remain)//60:>4}min  "
+            f"prog={s.progress:5.1%}  hours={s.hours:g}  |  {countdown_text(s)}"
         )
 
-    # 2026-11-03 是周二，11-07 是周六
-    show("工作日 08:00 未开工", base, datetime(2026, 11, 3, 8, 0))
-    show("工作日 09:00 整点开工", base, datetime(2026, 11, 3, 9, 0))
-    show("工作日 13:30 上到一半", base, datetime(2026, 11, 3, 13, 30))
-    show("工作日 18:00 整点下班", base, datetime(2026, 11, 3, 18, 0))
-    show("工作日 20:00 已下班", base, datetime(2026, 11, 3, 20, 0))
-    show("周六 全天休息", base, datetime(2026, 11, 7, 14, 0))
+    print("分段:", schedule_line(base), "| 每日在岗", hours_per_day(base), "小时")
+    show("08:00 未开工", base, datetime(2026, 11, 3, 8, 0))
+    show("08:30 上班", base, datetime(2026, 11, 3, 8, 30))
+    show("10:00 上午段", base, datetime(2026, 11, 3, 10, 0))
+    show("11:30 午休开始", base, datetime(2026, 11, 3, 11, 30))
+    show("12:40 午休中", base, datetime(2026, 11, 3, 12, 40))
+    show("14:00 下午段", base, datetime(2026, 11, 3, 14, 0))
+    show("15:45 下午段", base, datetime(2026, 11, 3, 15, 45))
+    show("17:30 下班", base, datetime(2026, 11, 3, 17, 30))
+    show("周六 休息", base, datetime(2026, 11, 7, 12, 0))
 
-    night = dict(base, pay_start="22:00", pay_end="06:00", pay_days=[0])
-    show("跨夜(周一班) 周二 02:00", night, datetime(2026, 11, 3, 2, 0))
-    show("跨夜(周一班) 周一 23:00", night, datetime(2026, 11, 2, 23, 0))
-    show("跨夜(周一班) 周二 12:00", night, datetime(2026, 11, 3, 12, 0))
+    print()
+    # 分段关掉时，中间的时间算在岗
+    one = dict(base, pay_break_enabled=False, pay_start="08:30", pay_end="17:30")
+    s = snapshot(one, datetime(2026, 11, 3, 12, 40))
+    print(f"不分段 12:40 -> {s.status} hours={s.hours:g} earned={s.earned:.2f}")
 
-    unset = dict(base, pay_monthly=0)
-    print("未填月薪:", snapshot(unset, datetime(2026, 11, 3, 10, 0)).status)
-    print("时薪校验: 17400/21.75/9 =", round(snapshot(base, datetime(2026, 11, 3, 10, 0)).hourly, 2))
+    # 跨夜单段仍然可用
+    night = {"pay_monthly": 10000, "pay_month_days": 21.75,
+             "pay_start": "22:00", "pay_end": "06:00", "pay_break_enabled": False,
+             "pay_days": [0]}
+    show("跨夜 周二02:00", night, datetime(2026, 11, 3, 2, 0))
+    show("跨夜 周一23:00", night, datetime(2026, 11, 2, 23, 0))
+
+    # 下午时间填岔了（开始早于上午结束）应当退回一段
+    bad = dict(base, pay_start2="11:00")
+    print("填岔时退化为:", schedule_line(bad), "|", hours_per_day(bad), "小时")

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "视线守卫"
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 
 def app_root() -> Path:
@@ -90,9 +90,14 @@ DEFAULTS = {
     "pay_enabled": True,
     "pay_monthly": 0.0,             # 月薪（元）；0 = 还没填，黑屏上不显示
     "pay_month_days": 21.75,        # 每月计薪天数：5 天工作制 21.75，单休约 26
-    "pay_start": "09:00",
-    "pay_end": "18:00",
+    "pay_start": "09:00",           # 上午上班
+    "pay_end": "18:00",             # 上午下班（不分段时就是全天结束）
     "pay_days": [0, 1, 2, 3, 4],    # 周一 = 0；空列表按"每天"处理
+
+    # 午休分段：08:30–11:30 + 14:00–17:30，中间那段不计工时
+    "pay_break_enabled": False,
+    "pay_start2": "14:00",
+    "pay_end2": "17:30",
 
     # 其他
     "show_preview": False,
@@ -100,10 +105,10 @@ DEFAULTS = {
     "sound_enabled": False,
 
     # 配置结构版本，用于升级时修正历史遗留的极端参数
-    "config_version": 4,
+    "config_version": 5,
 }
 
-CONFIG_VERSION = 4
+CONFIG_VERSION = 5
 
 # v2 时期的黑屏提示文案，升级时替换掉
 _OLD_HINT = "按 ESC 可手动关闭"
@@ -156,6 +161,12 @@ def _migrate(data: dict) -> dict:
         data.setdefault("pay_start", data.get("schedule_start", "09:00"))
         data.setdefault("pay_end", data.get("schedule_end", "18:00"))
         data.setdefault("pay_days", list(data.get("schedule_days") or DEFAULTS["pay_days"]))
+
+    if version < 5:
+        # v5 支持午休分段。默认不分段，保持老用户原有的"一口气算到下班"口径。
+        data.setdefault("pay_break_enabled", False)
+        data.setdefault("pay_start2", DEFAULTS["pay_start2"])
+        data.setdefault("pay_end2", DEFAULTS["pay_end2"])
 
     data["config_version"] = CONFIG_VERSION
     return data
