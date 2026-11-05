@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPalette
 from PySide6.QtWidgets import QWidget
 
 from core.actions import virtual_screen_rect
-from core.payroll import countdown_text, money, rate_line
+from core.payroll import countdown_text, money, money_rate, rate_line
 from core.wake import WakeWatcher
 
 
@@ -24,6 +24,10 @@ class ScreenOverlay(QWidget):
     # 键鼠轮询间隔。60ms 足够跟手，又不会白烧 CPU。
     POLL_MS = 60
 
+    # 工资板的刷新间隔。金额按秒折算，1 秒一刷在屏幕上就是"一秒跳一格"；
+    # 90ms 一刷（约 11fps）配上厘位小数，看到的才是水表一样连续往上爬。
+    PAY_MS = 90
+
     def __init__(self):
         super().__init__()
         self.setWindowFlags(
@@ -31,6 +35,13 @@ class ScreenOverlay(QWidget):
         )
         self.setCursor(Qt.BlankCursor)
         self.setFocusPolicy(Qt.StrongFocus)
+
+        # 背景固定黑：下面做局部重绘，只刷工资板那一块，未重绘的区域靠
+        # 后备缓冲留着就行，但得保证没有一处会露白。
+        pal = self.palette()
+        pal.setColor(QPalette.Window, QColor(0, 0, 0))
+        self.setPalette(pal)
+        self.setAutoFillBackground(True)
 
         self._title = ""
         self._hint = ""
@@ -41,7 +52,7 @@ class ScreenOverlay(QWidget):
         self._pay_provider = None
         self._pay = None
         self._pay_timer = QTimer(self)
-        self._pay_timer.setInterval(1000)
+        self._pay_timer.setInterval(self.PAY_MS)
         self._pay_timer.timeout.connect(self._tick_pay)
 
         self._wake = WakeWatcher()
@@ -85,7 +96,7 @@ class ScreenOverlay(QWidget):
         else:
             self._wake_timer.stop()
 
-        # 薪资每秒重算一次：黑屏上那串钱要一秒一秒往上爬
+        # 工资板立刻算一次并开始高频刷新：黑屏上那串钱要一秒一秒往上爬
         self._tick_pay()
         if self._pay is not None:
             self._pay_timer.start()
@@ -117,6 +128,11 @@ class ScreenOverlay(QWidget):
         self._pay_timer.stop()
 
     # ------------------------------------------------------------ 上班鼓励器
+    def _board_rect(self) -> QRect:
+        """工资板占据的区域。局部重绘只刷这一块，不必每 90ms 重画整个屏幕。"""
+        cy = self.height() // 2
+        return QRect(0, cy - 225, self.width(), 285)
+
     def _tick_pay(self) -> None:
         snap = None
         if self._pay_provider is not None:
@@ -126,7 +142,7 @@ class ScreenOverlay(QWidget):
                 snap = None
         self._pay = snap if (snap is not None and snap.ok) else None
         if self.isVisible():
-            self.update()
+            self.update(self._board_rect())
 
     # ------------------------------------------------------------ 唤醒
     def _poll_wake(self) -> None:
@@ -165,7 +181,9 @@ class ScreenOverlay(QWidget):
     # ------------------------------------------------------------ 绘制
     def paintEvent(self, event) -> None:  # noqa: N802
         p = QPainter(self)
-        p.fillRect(self.rect(), QColor(0, 0, 0))
+        # 只刷需要重绘的那块：全屏 2560×1600 每 90ms 填一遍太浪费，
+        # 未重绘的区域留在后备缓冲里照样是黑的。
+        p.fillRect(event.rect(), QColor(0, 0, 0))
 
         if self._pay is not None:
             self._paint_pay(p)
@@ -201,12 +219,12 @@ class ScreenOverlay(QWidget):
         p.setFont(f)
         p.drawText(QRect(0, cy - 210, w, 26), Qt.AlignCenter, "今 日 已 赚")
 
-        # 金额：整个屏幕最亮的东西
+        # 金额：整个屏幕最亮的东西，精确到厘，看着它一秒一秒往上走
         p.setPen(QColor(214, 160, 78))
         f = QFont("Microsoft YaHei UI", 46)
         f.setWeight(QFont.DemiBold)
         p.setFont(f)
-        p.drawText(QRect(0, cy - 175, w, 92), Qt.AlignCenter, money(snap.earned))
+        p.drawText(QRect(0, cy - 175, w, 92), Qt.AlignCenter, money(snap.earned, 3))
 
         # 时薪 / 每分钟
         p.setPen(QColor(88, 93, 100))

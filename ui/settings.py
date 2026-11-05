@@ -25,8 +25,7 @@ from core.config import APP_NAME, APP_VERSION
 from core.detector import STATE_AWAY, STATE_PAUSED, STATE_PRESENT
 from core.payroll import (
     countdown_text,
-    money,
-    money_daily,
+    money_rate,
     schedule_line,
     snapshot as pay_snapshot,
 )
@@ -685,9 +684,9 @@ class SettingsWindow(QWidget):
         else:
             text = (
                 f"时段 {schedule_line(self.cfg)}，共 {snap.hours:g} 小时\n"
-                f"日薪 {money_daily(snap.daily)}  =  月薪 {money(snap.monthly)} ÷ {snap.days:g} 天\n"
-                f"时薪 {money(snap.hourly)}  =  日薪 ÷ {snap.hours:g} 小时\n"
-                f"{countdown_text(snap)}   ·   今天已赚 {money(snap.earned)}"
+                f"日薪 {money_rate(snap.daily)}  =  月薪 {money_rate(snap.monthly)} ÷ {snap.days:g} 天\n"
+                f"时薪 {money_rate(snap.hourly)}  =  日薪 ÷ {snap.hours:g} 小时\n"
+                f"{countdown_text(snap)}   ·   今天已赚 {money_rate(snap.earned)}"
             )
         if self.pay_preview.text() != text:
             self.pay_preview.setText(text)

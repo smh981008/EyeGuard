@@ -181,10 +181,10 @@ def snapshot(cfg, now: datetime | None = None) -> PaySnapshot:
     segs = segments(cfg)
     hours = hours_per_day(cfg)
 
-    # 日薪保留 3 位（到厘）：月薪 ÷ 21.75 是无限小数，先定格再往后乘，
-    # 否则界面上显示的日薪和由它推出来的时薪、已赚金额会出现尾数对不上。
+    # 日薪和时薪都保留 3 位（到厘）：月薪 ÷ 21.75 是无限小数，先定格再往后乘，
+    # 否则界面上显示的费率和由它推出来的金额会出现尾数对不上。
     daily = round(monthly / mdays, 3) if monthly > 0 else 0.0
-    hourly = daily / hours if daily > 0 else 0.0
+    hourly = round(daily / hours, 3) if daily > 0 else 0.0
 
     base = dict(
         monthly=monthly, daily=daily, hourly=hourly,
@@ -211,12 +211,13 @@ def snapshot(cfg, now: datetime | None = None) -> PaySnapshot:
 
 # ------------------------------------------------------------------ 文案
 def money(v: float, places: int = 2) -> str:
-    """金额格式化。实发金额到分为止（2 位），换算出来的日薪到厘（3 位）。"""
+    """金额格式化。实发金额到分为止（2 位），费率类换算值到厘（3 位）。"""
     return f"¥{v:,.{places}f}"
 
 
-def money_daily(v: float) -> str:
-    """日薪专用：10000 ÷ 21.75 = 459.770，2 位小数会把厘丢掉。"""
+def money_rate(v: float) -> str:
+    """费率/换算值专用（日薪、时薪、每分钟）：10000 ÷ 21.75 = 459.770，
+    2 位小数会把厘丢掉，黑屏上那串钱也就看不出在动。"""
     return money(v, 3)
 
 
@@ -248,7 +249,7 @@ def countdown_text(snap: PaySnapshot) -> str:
 
 
 def rate_line(snap: PaySnapshot) -> str:
-    return f"时薪 {money(snap.hourly)} · 每分钟 {money(snap.per_minute)}"
+    return f"时薪 {money_rate(snap.hourly)} · 每分钟 {money_rate(snap.per_minute)}"
 
 
 def schedule_line(cfg) -> str:
@@ -266,9 +267,9 @@ def summary(cfg, now: datetime | None = None) -> str:
         return "还没填月薪，黑屏上不会显示。"
     return (
         f"时段 {schedule_line(cfg)}，共 {snap.hours:g} 小时。\n"
-        f"日薪 {money_daily(snap.daily)} = {money(snap.monthly)} ÷ {snap.days:g} 天；"
-        f"时薪 {money(snap.hourly)} = 日薪 ÷ {snap.hours:g} 小时。\n"
-        f"现在是「{countdown_text(snap)}」，今天已赚 {money(snap.earned)}。"
+        f"日薪 {money_rate(snap.daily)} = {money(snap.monthly)} ÷ {snap.days:g} 天；"
+        f"时薪 {money_rate(snap.hourly)} = 日薪 ÷ {snap.hours:g} 小时。\n"
+        f"现在是「{countdown_text(snap)}」，今天已赚 {money_rate(snap.earned)}。"
     )
 
 
@@ -293,10 +294,13 @@ if __name__ == "__main__":
     print("分段:", schedule_line(base), "| 每日在岗", hours_per_day(base), "小时")
     s0 = snapshot(base, datetime(2026, 11, 3, 10, 0))
     print(
-        f"日薪 {money_daily(s0.daily)} = {money(s0.monthly)} ÷ {s0.days:g} 天"
+        f"日薪 {money_rate(s0.daily)} = {money(s0.monthly)} ÷ {s0.days:g} 天"
         f"  （未截断 {s0.monthly / s0.days:.6f}）"
     )
-    print(f"时薪 {money(s0.hourly)} = 日薪 ÷ {s0.hours:g} 小时  （{s0.hourly:.6f}）")
+    print(
+        f"时薪 {money_rate(s0.hourly)} = 日薪 ÷ {s0.hours:g} 小时  "
+        f"每分钟 {money_rate(s0.per_minute)}  （未截断 {s0.hourly:.6f}）"
+    )
     show("08:00 未开工", base, datetime(2026, 11, 3, 8, 0))
     show("08:30 上班", base, datetime(2026, 11, 3, 8, 30))
     show("10:00 上午段", base, datetime(2026, 11, 3, 10, 0))
