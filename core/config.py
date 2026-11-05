@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "视线守卫"
-APP_VERSION = "1.2.2"
+APP_VERSION = "1.5.0"
 
 
 def app_root() -> Path:
@@ -86,9 +86,24 @@ DEFAULTS = {
     "wake_rearm_seconds": 0.0,      # 解除后多久没键鼠输入且人仍不在，重新黑屏
                                     # 0 = 不重新黑屏（下次真正离开才再触发）
 
-    # 上班鼓励器：黑屏时把"今天赚了多少、还剩多久下班"打在屏幕上
+    # 上班鼓励器：独立桌面悬浮窗，实时显示"今天赚了多少、还剩多久下班"。
+    # 跟检测/黑屏完全解耦——黑屏关了它也照常待在桌面上。
     "pay_enabled": True,
-    "pay_monthly": 0.0,             # 月薪（元）；0 = 还没填，黑屏上不显示
+    "pay_widget_x": -1,             # 悬浮窗位置；-1 = 还没摆过，贴右下角
+    "pay_widget_y": -1,
+    "pay_widget_locked": False,     # 锁定位置：拖不动，防手滑
+    "pay_widget_autohide": False,   # 平时整窗透明，鼠标移进范围才淡入
+    # 外观：色相/饱和度无级可调，底色是同一色相的极暗版本，整窗色调跟着走
+    "pay_widget_hue": 36,           # 色相 0–359（36° + 62% 饱和就是原来的金色）
+    "pay_widget_sat": 62,           # 饱和度 0–100；0 = 纯灰白
+    "pay_widget_bg_alpha": 92,      # 底板不透明度 0–100（0 = 完全透出桌面）
+    "pay_widget_text_alpha": 100,   # 文字/刻度不透明度 0–100
+    # 点击穿透：窗口盖在别的东西上面时，能不能透过去点底下的页面
+    #   0 = 不穿透（正常点它）
+    #   1 = 按住 Ctrl 时穿透（松开就恢复正常，随时能拖动/关闭）
+    #   2 = 始终穿透（纯看板，只能从托盘菜单改回来）
+    "pay_widget_clickthrough": 0,
+    "pay_monthly": 0.0,             # 月薪（元）；0 = 还没填，悬浮窗提示去设置
     "pay_month_days": 21.75,        # 每月计薪天数：5 天工作制 21.75，单休约 26
     "pay_start": "09:00",           # 上午上班
     "pay_end": "18:00",             # 上午下班（不分段时就是全天结束）
@@ -104,11 +119,17 @@ DEFAULTS = {
     "preview_mirror": True,
     "sound_enabled": False,
 
+    # 配置方案：整套设置存成一个个有名字的方案（配置1、配置2…）
+    #   {"配置1": {"saved_at": "2026-11-05 15:20", "values": {...}}, ...}
+    # values 里是 DEFAULTS 全部键的快照，详见 core/profiles.py
+    "profiles": {},
+    "active_profile": "",           # 最近一次保存/套用的方案名
+
     # 配置结构版本，用于升级时修正历史遗留的极端参数
-    "config_version": 5,
+    "config_version": 10,
 }
 
-CONFIG_VERSION = 5
+CONFIG_VERSION = 10
 
 # v2 时期的黑屏提示文案，升级时替换掉
 _OLD_HINT = "按 ESC 可手动关闭"
@@ -167,6 +188,34 @@ def _migrate(data: dict) -> dict:
         data.setdefault("pay_break_enabled", False)
         data.setdefault("pay_start2", DEFAULTS["pay_start2"])
         data.setdefault("pay_end2", DEFAULTS["pay_end2"])
+
+    if version < 6:
+        # v6 把上班鼓励器从黑屏里拆成独立悬浮窗。pay_enabled 语义变为
+        # "显示桌面悬浮窗"，老用户原来的勾选状态直接继承，升级后立刻能看到。
+        data.setdefault("pay_widget_x", -1)
+        data.setdefault("pay_widget_y", -1)
+
+    if version < 7:
+        # v7 加了"锁定位置"和"鼠标移上来才显示"，默认都关着，保持原来的手感。
+        data.setdefault("pay_widget_locked", False)
+        data.setdefault("pay_widget_autohide", False)
+
+    if version < 8:
+        # v8 支持"配置方案"：整套设置存成有名字的方案。老用户先给一本空册子，
+        # 第一次点「新建方案」时才往里写，不强塞一个叫"默认"的。
+        data.setdefault("profiles", {})
+        data.setdefault("active_profile", "")
+
+    if version < 9:
+        # v9 悬浮窗外观可调。默认值就是原来的金色 + 92% 底板，升级后看不出变化。
+        data.setdefault("pay_widget_hue", 36)
+        data.setdefault("pay_widget_sat", 62)
+        data.setdefault("pay_widget_bg_alpha", 92)
+        data.setdefault("pay_widget_text_alpha", 100)
+
+    if version < 10:
+        # v10 悬浮窗可以"点得穿过去"。默认不穿透，保持原来的手感。
+        data.setdefault("pay_widget_clickthrough", 0)
 
     data["config_version"] = CONFIG_VERSION
     return data

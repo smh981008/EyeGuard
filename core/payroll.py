@@ -11,8 +11,8 @@
 午休那段时间不产生收入，进度条会停住、金额不动 —— 这样"今天赚了多少"始终
 等于"你实际干活干了多久"，比把午休也算成工时更经得起推敲。
 
-所有钱都按当前这一刻连续折算，不做"整点跳一次"，所以黑屏上的数字会一秒
-一秒往上走。
+所有钱都按当前这一刻连续折算，不做"整点跳一次"，所以悬浮窗上的数字会一
+秒一秒往上走。
 """
 from __future__ import annotations
 
@@ -217,7 +217,7 @@ def money(v: float, places: int = 2) -> str:
 
 def money_rate(v: float) -> str:
     """费率/换算值专用（日薪、时薪、每分钟）：10000 ÷ 21.75 = 459.770，
-    2 位小数会把厘丢掉，黑屏上那串钱也就看不出在动。"""
+    2 位小数会把厘丢掉，悬浮窗上那串钱也就看不出在动。"""
     return money(v, 3)
 
 
@@ -234,7 +234,7 @@ def human_duration(seconds: float) -> str:
 
 
 def countdown_text(snap: PaySnapshot) -> str:
-    """黑屏上那行倒计时 / 状态。"""
+    """悬浮窗那行倒计时 / 状态。"""
     if snap.status == STATUS_WORKING:
         return f"距下班 {human_duration(snap.remain)}"
     if snap.status == STATUS_LUNCH:
@@ -264,7 +264,7 @@ def summary(cfg, now: datetime | None = None) -> str:
     """给设置页看的一句话摘要。"""
     snap = snapshot(cfg, now)
     if not snap.ok:
-        return "还没填月薪，黑屏上不会显示。"
+        return "还没填月薪，悬浮窗上只会提示去设置。"
     return (
         f"时段 {schedule_line(cfg)}，共 {snap.hours:g} 小时。\n"
         f"日薪 {money_rate(snap.daily)} = {money(snap.monthly)} ÷ {snap.days:g} 天；"

@@ -25,3 +25,9 @@ config.json
 *.swp
 Thumbs.db
 desktop.ini
+
+# 启动脚本的重定向日志
+run.log
+run.out.log
+run.err.log
+build.log

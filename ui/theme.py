@@ -37,7 +37,16 @@ QTabBar::tab {
     border-radius: 8px; font-size: 13px;
 }
 QTabBar::tab:selected { background: #ffffff; color: #2f6fed; font-weight: 600; }
-QTabBar::tab:hover:!selected { color: #374151; background: #ffffffaa; }
+QTabBar::tab:hover:!selected { color: #374151; background: #f7f9fc; }
+
+/* 配置方案列表：两行一项，选中要有明确底色，否则看不出保存目标是哪个 */
+QListWidget {
+    background: #fbfcfd; border: 1px solid #eaecf0; border-radius: 10px;
+    padding: 4px; font-size: 12px; outline: none;
+}
+QListWidget::item { padding: 5px 10px; border-radius: 7px; color: #1f2329; }
+QListWidget::item:hover:!selected { background: #f2f5fa; }
+QListWidget::item:selected { background: #e8f0fe; color: #1f4fc4; }
 
 QCheckBox { spacing: 9px; font-size: 13px; color: #1f2329; }
 QCheckBox::indicator { width: 17px; height: 17px; border-radius: 5px;

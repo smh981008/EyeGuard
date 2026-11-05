@@ -66,6 +66,27 @@ class Tray(QSystemTrayIcon):
         self.act_enable.triggered.connect(app.toggle_enabled)
         menu.addAction(self.act_enable)
 
+        self.act_pay = QAction("上班鼓励器悬浮窗", menu)
+        self.act_pay.setCheckable(True)
+        self.act_pay.triggered.connect(app.toggle_pay_widget)
+        menu.addAction(self.act_pay)
+
+        # 悬浮窗设成"始终穿透"之后就完全点不开了，这里是唯一的改回来的入口
+        self.menu_pierce = menu.addMenu("悬浮窗点击穿透")
+        self.pierce_acts = []
+        for label, mode in (
+            ("不穿透", 0),
+            ("按住 Ctrl 时穿透", 1),
+            ("始终穿透（只能从这里改回来）", 2),
+        ):
+            act = self.menu_pierce.addAction(label)
+            act.setCheckable(True)
+            act.setData(mode)
+            act.triggered.connect(
+                lambda _=False, m=mode: app.set_penetrate_mode(int(m))
+            )
+            self.pierce_acts.append(act)
+
         menu.addSeparator()
 
         self.act_cal = QAction("校准基准姿态", menu)
@@ -77,7 +98,7 @@ class Tray(QSystemTrayIcon):
         menu.addAction(self.act_test)
 
         self.act_hide = QAction("关闭黑屏遮罩", menu)
-        self.act_hide.triggered.connect(lambda: app.overlay.hide_overlay())
+        self.act_hide.triggered.connect(app.hide_black_screen)
         menu.addAction(self.act_hide)
 
         menu.addSeparator()
@@ -93,14 +114,22 @@ class Tray(QSystemTrayIcon):
         self.act_quit.triggered.connect(app.quit)
         menu.addAction(self.act_quit)
 
-        menu.aboutToShow.connect(self._sync_menu)
+        menu.aboutToShow.connect(self.sync_menu)
         self.setContextMenu(menu)
         self.activated.connect(self._on_activated)
-        self._sync_menu()
+        self.sync_menu()
 
-    def _sync_menu(self) -> None:
-        self.act_enable.setChecked(bool(self.app.cfg["enabled"]))
-        self.act_auto.setChecked(bool(self.app.cfg["start_with_windows"]))
+    def sync_menu(self) -> None:
+        """菜单里的勾选状态跟 cfg 对齐。设置页改了开关也会调过来。"""
+        try:
+            self.act_enable.setChecked(bool(self.app.cfg["enabled"]))
+            self.act_auto.setChecked(bool(self.app.cfg["start_with_windows"]))
+            self.act_pay.setChecked(bool(self.app.cfg["pay_enabled"]))
+            mode = int(self.app.cfg["pay_widget_clickthrough"])
+            for act in self.pierce_acts:
+                act.setChecked(int(act.data()) == mode)
+        except RuntimeError:
+            pass
 
     def _on_activated(self, reason) -> None:
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):

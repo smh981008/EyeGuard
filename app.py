@@ -15,18 +15,31 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QTimer, Signal
 from PySide6.QtWidgets import QApplication, QMessageBox, QSystemTrayIcon
 
-from core import payroll
+from core import payroll, profiles as profile_store
 from core.actions import is_autostart_on, set_autostart
 from core.activity import idle_seconds
 from core.config import APP_NAME, Config, app_root
 from core.detector import STATE_AWAY, STATE_PAUSED, STATE_PRESENT, Detector
 from core.schedule import describe_now, in_window
 from ui.overlay import ScreenOverlay
+from ui.paywidget import PayWidget
 from ui.settings import SettingsWindow
 from ui.theme import QSS
 from ui.tray import Tray, make_icon
 
 SINGLE_INSTANCE_PORT = 47831
+
+
+def _say(*args) -> None:
+    """打印一句提示，但绝不因为"没有控制台"而崩。
+
+    pythonw / 打包后的 exe 里 sys.stdout 可能是 None，直接 print 会抛
+    AttributeError，把整个程序带走 —— 一句日志不该有这种权力。
+    """
+    try:
+        print(*args)
+    except Exception:
+        pass
 
 
 def _ensure_single_instance() -> socket.socket | None:
@@ -73,6 +86,9 @@ class DesktopApp(QObject):
         self.tray = Tray(self)
         self.settings = SettingsWindow(self)
 
+        # 上班鼓励器：独立于检测/黑屏的桌面悬浮窗
+        self.pay_widget = PayWidget(self)
+
         self._state_timer = QTimer(self)
         self._state_timer.timeout.connect(self._poll_state)
         self._state_timer.start(450)
@@ -94,6 +110,9 @@ class DesktopApp(QObject):
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
         self.detector.start()
+
+        # 悬浮窗自己贴在右下角；配置里关着就不会出现
+        self.pay_widget.apply_config()
 
         # 启动时先按计划对一次表：比如现在是晚上，计划只到 18:00，
         # 那就别先开 20 秒再关掉。
@@ -117,10 +136,10 @@ class DesktopApp(QObject):
             else "paused"
         )
 
-    # ------------------------------------------------------------ 触发
-    def _pay_snapshot(self):
-        """黑屏上工资板的数据源。关掉或没填月薪时返回 None，遮罩就只显示
-        原来的文字。每次调用都重新算，所以黑屏期间改设置会立刻生效。"""
+    # ------------------------------------------------------------ 上班鼓励器
+    def pay_snapshot(self):
+        """悬浮窗的数据源。关掉或没填月薪时返回 None，悬浮窗就显示提示语。
+        每次调用都重新算，所以改了月薪/时段会立刻反映到桌面上。"""
         if not self.cfg["pay_enabled"]:
             return None
         try:
@@ -128,12 +147,50 @@ class DesktopApp(QObject):
         except Exception:
             return None
 
+    def apply_pay_widget(self) -> None:
+        """按开关显隐悬浮窗。设置页、托盘菜单都走这里，保证两边状态一致。"""
+        if bool(self.cfg["pay_enabled"]) and not self.overlay.isVisible():
+            self.pay_widget.reveal()
+        else:
+            self.pay_widget.conceal()
+        self.tray.sync_menu()
+
+    def toggle_pay_widget(self) -> None:
+        self.cfg["pay_enabled"] = not bool(self.cfg["pay_enabled"])
+        self.cfg.save()
+        self.apply_pay_widget()
+        self.settings.sync_pay_switch()
+
+    def set_penetrate_mode(self, mode: int) -> None:
+        """托盘菜单用：切悬浮窗的点击穿透。"""
+        self.pay_widget.set_penetrate_mode(int(mode))
+        self.settings.sync_pay_options()
+
+    # ------------------------------------------------------------ 配置方案
+    def apply_profile(self, name: str) -> bool:
+        """把某个配置方案整套套上，并让桌面上的东西立刻跟上。
+
+        方案里不存运行/暂停状态，所以 set_enabled 传的还是当前值——
+        只是给"方案里改了定时计划"这种情况补一次重算。
+        """
+        if not profile_store.apply(self.cfg, name):
+            return False
+        self.cfg.save()
+        self.set_enabled(bool(self.cfg["enabled"]))
+        self.apply_pay_widget()
+        self.pay_widget.apply_style()     # 锁定 / 透明待机可能也变了
+        self.check_schedule_now()
+        self.settings.reload_from_cfg()
+        return True
+
+    # ------------------------------------------------------------ 触发
     def _show_black_screen(self) -> None:
+        # 遮罩是整屏的，先把悬浮窗收起来，免得它跟遮罩抢最上层
+        self.pay_widget.conceal()
         self.overlay.show_overlay(
             str(self.cfg["black_screen_text"]),
             str(self.cfg["black_screen_hint"]),
             wake_on_input=bool(self.cfg["wake_on_input"]),
-            pay_provider=self._pay_snapshot,
         )
 
     def _on_leave(self, reasons: list[str]) -> None:
@@ -150,10 +207,25 @@ class DesktopApp(QObject):
     def _on_return(self) -> None:
         self._overlay_dismissed = False
         self.overlay.hide_overlay()
+        self._restore_pay_widget()
 
     def _on_overlay_dismissed(self) -> None:
         # 用户按键鼠或 ESC 主动关掉，这一轮就不再自动弹回来
         self._overlay_dismissed = True
+        self._restore_pay_widget()
+
+    def hide_black_screen(self) -> None:
+        """托盘里点「关闭黑屏遮罩」。标记成用户主动解除，否则看门狗
+        1.5 秒后又把它盖回来。"""
+        self._overlay_dismissed = True
+        self.overlay.hide_overlay()
+        self._restore_pay_widget()
+
+    def _restore_pay_widget(self) -> None:
+        """黑屏收起来之后把悬浮窗放回桌面。等淡出动画走完再显示，
+        否则会看到它透过半透明的黑幕浮上来。走 apply_pay_widget 是为了
+        复用"遮罩还在就别显示"那道判断。"""
+        QTimer.singleShot(320, self.apply_pay_widget)
 
     def _watch_overlay(self) -> None:
         """黑屏期间持续确认遮罩在最前面、而且没被关掉。
@@ -207,7 +279,12 @@ class DesktopApp(QObject):
             pass
 
     # ------------------------------------------------------------ 用户操作
-    def open_settings(self) -> None:
+    def open_settings(self, tab: int | None = None) -> None:
+        if tab is not None:
+            try:
+                self.settings.tabs.setCurrentIndex(int(tab))
+            except Exception:
+                pass
         self.settings.show()
         self.settings.raise_()
         self.settings.activateWindow()
@@ -224,6 +301,7 @@ class DesktopApp(QObject):
             self.detector.resume()
         else:
             self.overlay.hide_overlay(animate=False)
+            self._restore_pay_widget()
             self.detector.pause()
 
     def toggle_enabled(self) -> None:
@@ -273,7 +351,11 @@ class DesktopApp(QObject):
     def test_trigger(self) -> None:
         self._on_leave(["手动测试"])
         # 测试时人脸一直在，状态机不会自动恢复，3 秒后主动收起
-        QTimer.singleShot(3000, self.overlay.hide_overlay)
+        QTimer.singleShot(3000, self._close_overlay_test)
+
+    def _close_overlay_test(self) -> None:
+        self.overlay.hide_overlay()
+        self._restore_pay_widget()
 
     def toggle_autostart(self) -> None:
         want = not bool(self.cfg["start_with_windows"])
@@ -295,7 +377,7 @@ class DesktopApp(QObject):
             QTimer.singleShot(3000, lambda: self.settings.msg.setText(""))
         except Exception:
             pass
-        print(msg)
+        _say(msg)
 
     # ------------------------------------------------------------ 退出
     def quit(self) -> None:
@@ -304,6 +386,10 @@ class DesktopApp(QObject):
         self._overlay_timer.stop()
         try:
             self.overlay.hide_overlay(animate=False)
+        except Exception:
+            pass
+        try:
+            self.pay_widget.conceal()
         except Exception:
             pass
         try:
@@ -323,7 +409,7 @@ class DesktopApp(QObject):
 
 def main() -> None:
     if os.name != "nt":
-        print("仅支持 Windows。")
+        _say("仅支持 Windows。")
         return
 
     lock = _ensure_single_instance()
