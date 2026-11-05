@@ -23,7 +23,13 @@ from PySide6.QtWidgets import (
 
 from core.config import APP_NAME, APP_VERSION
 from core.detector import STATE_AWAY, STATE_PAUSED, STATE_PRESENT
-from core.payroll import countdown_text, money, schedule_line, snapshot as pay_snapshot
+from core.payroll import (
+    countdown_text,
+    money,
+    money_daily,
+    schedule_line,
+    snapshot as pay_snapshot,
+)
 from core.schedule import DAY_SHORT, days_set, describe_now, in_window
 from ui.theme import ACCENT, OK, QSS, SUB, WARN
 
@@ -679,7 +685,7 @@ class SettingsWindow(QWidget):
         else:
             text = (
                 f"时段 {schedule_line(self.cfg)}，共 {snap.hours:g} 小时\n"
-                f"日薪 {money(snap.daily)}  =  月薪 {money(snap.monthly)} ÷ {snap.days:g} 天\n"
+                f"日薪 {money_daily(snap.daily)}  =  月薪 {money(snap.monthly)} ÷ {snap.days:g} 天\n"
                 f"时薪 {money(snap.hourly)}  =  日薪 ÷ {snap.hours:g} 小时\n"
                 f"{countdown_text(snap)}   ·   今天已赚 {money(snap.earned)}"
             )

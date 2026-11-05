@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "视线守卫"
-APP_VERSION = "1.2.0"
+APP_VERSION = "1.2.1"
 
 
 def app_root() -> Path:
