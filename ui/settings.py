@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 from core import profiles as profile_store
 from core.config import APP_NAME, APP_VERSION
 from core.detector import STATE_AWAY, STATE_PAUSED, STATE_PRESENT
+from core.hotkey import HOTKEY_LABEL
 from core.payroll import (
     countdown_text,
     money_rate,
@@ -118,6 +119,12 @@ class SettingsWindow(QWidget):
         test_btn.clicked.connect(self.app.test_trigger)
         bar.addWidget(test_btn)
 
+        self.onekey_btn = QPushButton("关闭检测并黑屏")
+        self.onekey_btn.setObjectName("ghost")
+        self.onekey_btn.setCursor(Qt.PointingHandCursor)
+        self.onekey_btn.clicked.connect(self._onekey)
+        bar.addWidget(self.onekey_btn)
+
         bar.addStretch()
 
         self.msg = QLabel("")
@@ -182,6 +189,34 @@ class SettingsWindow(QWidget):
         wake_tip.setObjectName("hint")
         wake_tip.setWordWrap(True)
         cl.addWidget(wake_tip)
+        lay.addWidget(card)
+
+        # ---------------- 一键：两件事一起做
+        card, cl = self._card("一键：关闭检测并黑屏")
+        onekey = QPushButton("现在就执行一次")
+        onekey.setObjectName("primary")
+        onekey.setCursor(Qt.PointingHandCursor)
+        onekey.clicked.connect(self._onekey)
+        cl.addWidget(onekey)
+
+        self.hotkey_check = QCheckBox(f"允许用 {HOTKEY_LABEL} 在任意程序里触发")
+        self.hotkey_check.setChecked(bool(self.cfg["onekey_hotkey"]))
+        self.hotkey_check.setCursor(Qt.PointingHandCursor)
+        self.hotkey_check.toggled.connect(self.app.set_onekey_hotkey)
+        self._bindings.append(
+            lambda: self._set_check(self.hotkey_check, "onekey_hotkey")
+        )
+        cl.addWidget(self.hotkey_check)
+
+        onekey_tip = QLabel(
+            "点一下做两件事：停掉摄像头检测（托盘图标变灰），然后整屏黑下来。"
+            "适合开会、去吃饭、趴一会儿——不想让它继续判「你到底在不在」，"
+            "也不想屏幕亮着。按任意键或动鼠标就亮屏，但检测不会自己恢复，"
+            "要接着用再点左下角的「已暂停 · 点击启用」。"
+        )
+        onekey_tip.setObjectName("hint")
+        onekey_tip.setWordWrap(True)
+        cl.addWidget(onekey_tip)
         lay.addWidget(card)
 
         lay.addStretch()
@@ -1316,6 +1351,18 @@ class SettingsWindow(QWidget):
     def _toggle_enable(self) -> None:
         self.app.toggle_enabled()
         self._refresh_enable_btn()
+
+    def _onekey(self) -> None:
+        """一键：关检测 + 黑屏。按钮就在左下角，点完自己也要变灰。"""
+        self.app.pause_and_blackout()
+        self._refresh_enable_btn()
+
+    def sync_enable_state(self) -> None:
+        """托盘、悬浮窗右键、一键黑屏都能改运行状态，改完得让界面跟上。"""
+        self._refresh_enable_btn()
+        box = getattr(self, "hotkey_check", None)
+        if box is not None:
+            self._set_check(box, "onekey_hotkey")
 
     def _refresh_enable_btn(self) -> None:
         if self.cfg["enabled"]:

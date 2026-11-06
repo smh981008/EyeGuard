@@ -6,6 +6,8 @@ from PySide6.QtCore import QRectF, Qt
 from PySide6.QtGui import QAction, QColor, QIcon, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import QMenu, QSystemTrayIcon
 
+from core.hotkey import HOTKEY_LABEL
+
 COLOR_PRESENT = (18, 183, 106)
 COLOR_AWAY = (240, 68, 56)
 COLOR_PAUSED = (154, 164, 178)
@@ -65,6 +67,11 @@ class Tray(QSystemTrayIcon):
         self.act_enable.setCheckable(True)
         self.act_enable.triggered.connect(app.toggle_enabled)
         menu.addAction(self.act_enable)
+
+        # 一件事，点一下：停检测 + 立刻黑屏。开会、吃饭、午睡前的标准动作
+        self.act_blackout = QAction("一键：关闭检测并黑屏", menu)
+        self.act_blackout.triggered.connect(app.pause_and_blackout)
+        menu.addAction(self.act_blackout)
 
         self.act_pay = QAction("上班鼓励器悬浮窗", menu)
         self.act_pay.setCheckable(True)
@@ -128,6 +135,12 @@ class Tray(QSystemTrayIcon):
             mode = int(self.app.cfg["pay_widget_clickthrough"])
             for act in self.pierce_acts:
                 act.setChecked(int(act.data()) == mode)
+            # 快捷键关着就别在菜单上写它，免得人按了没反应以为程序坏了
+            label = "一键：关闭检测并黑屏"
+            if self.app.cfg["onekey_hotkey"]:
+                label += f"（{HOTKEY_LABEL}）"
+            if self.act_blackout.text() != label:
+                self.act_blackout.setText(label)
         except RuntimeError:
             pass
 

@@ -20,6 +20,7 @@ from core.actions import is_autostart_on, set_autostart
 from core.activity import idle_seconds
 from core.config import APP_NAME, Config, app_root
 from core.detector import STATE_AWAY, STATE_PAUSED, STATE_PRESENT, Detector
+from core.hotkey import HotkeyWatcher
 from core.schedule import describe_now, in_window
 from ui.overlay import ScreenOverlay
 from ui.paywidget import PayWidget
@@ -71,6 +72,8 @@ class DesktopApp(QObject):
         self.overlay = ScreenOverlay()
         self.overlay.dismissed.connect(self._on_overlay_dismissed)
         self._overlay_dismissed = False
+        # 一键黑屏期间检测是停着的，"该不该维持遮罩"就不能再问 enabled 了
+        self._manual_blackout = False
         self.bridge = Bridge()
         self.bridge.leave.connect(self._on_leave)
         self.bridge.returned.connect(self._on_return)
@@ -88,6 +91,10 @@ class DesktopApp(QObject):
 
         # 上班鼓励器：独立于检测/黑屏的桌面悬浮窗
         self.pay_widget = PayWidget(self)
+
+        # 全局快捷键 Ctrl+Alt+B：跟托盘/设置页里那个按钮是同一个动作
+        self.hotkey = HotkeyWatcher(self.pause_and_blackout, self)
+        self.hotkey.set_enabled(bool(self.cfg["onekey_hotkey"]))
 
         self._state_timer = QTimer(self)
         self._state_timer.timeout.connect(self._poll_state)
@@ -179,6 +186,7 @@ class DesktopApp(QObject):
         self.set_enabled(bool(self.cfg["enabled"]))
         self.apply_pay_widget()
         self.pay_widget.apply_style()     # 锁定 / 透明待机可能也变了
+        self.hotkey.set_enabled(bool(self.cfg["onekey_hotkey"]))
         self.check_schedule_now()
         self.settings.reload_from_cfg()
         return True
@@ -206,20 +214,52 @@ class DesktopApp(QObject):
 
     def _on_return(self) -> None:
         self._overlay_dismissed = False
+        self._manual_blackout = False
         self.overlay.hide_overlay()
         self._restore_pay_widget()
 
     def _on_overlay_dismissed(self) -> None:
         # 用户按键鼠或 ESC 主动关掉，这一轮就不再自动弹回来
         self._overlay_dismissed = True
+        self._manual_blackout = False
         self._restore_pay_widget()
 
     def hide_black_screen(self) -> None:
         """托盘里点「关闭黑屏遮罩」。标记成用户主动解除，否则看门狗
         1.5 秒后又把它盖回来。"""
         self._overlay_dismissed = True
+        self._manual_blackout = False
         self.overlay.hide_overlay()
         self._restore_pay_widget()
+
+    def pause_and_blackout(self) -> None:
+        """一键：关掉检测，然后立刻黑屏。
+
+        顺序不能反。``set_enabled(False)`` 里会 ``hide_overlay(animate=False)``，
+        先黑屏再暂停等于刚挂上就把自己收起来。
+
+        两件事本来就是用户明确要一起做的：离开工位（开会、吃饭、午睡）时，
+        既不想让摄像头继续判来判去，也不想让屏幕亮着。检测停了之后要恢复，
+        得自己去点「启用检测」——这正是"暂停"该有的语义。
+        """
+        if bool(self.cfg["enabled"]):
+            self.set_enabled(False)
+
+        self._manual_blackout = True
+        self._overlay_dismissed = False
+        self._show_black_screen()
+
+        self.settings.sync_enable_state()
+        self.tray.sync_menu()
+        self._toast("已关闭检测并黑屏 · 按键或移动鼠标即可亮屏")
+
+    def set_onekey_hotkey(self, on: bool) -> None:
+        """设置页/托盘改「全局快捷键」时统一走这里，保证定时器真的跟着开关。"""
+        on = bool(on)
+        self.cfg["onekey_hotkey"] = on
+        self.cfg.save()
+        self.hotkey.set_enabled(on)
+        self.tray.sync_menu()          # 菜单项后面要不要带快捷键提示
 
     def _restore_pay_widget(self) -> None:
         """黑屏收起来之后把悬浮窗放回桌面。等淡出动画走完再显示，
@@ -234,13 +274,18 @@ class DesktopApp(QObject):
         桌面）都能盖住我们的遮罩，表现就是"人明明不在，屏幕却自己亮
         了"，而检测状态一切正常。所以只要状态还是"离开"，就周期性
         把它重新提到最上层。
+
+        一键黑屏（``_manual_blackout``）时检测已经停了，上面那三道
+        "该不该管"的判断全部不成立，但它同样需要一个看门狗——否则
+        一个通知横幅就能把用户主动要的黑屏顶掉。
         """
-        if not self.cfg["enabled"]:
-            return
-        if "black_screen" not in self.cfg.actions():
-            return
-        if self.detector.snapshot().state != STATE_AWAY:
-            return
+        if not self._manual_blackout:
+            if not self.cfg["enabled"]:
+                return
+            if "black_screen" not in self.cfg.actions():
+                return
+            if self.detector.snapshot().state != STATE_AWAY:
+                return
         if self._overlay_dismissed:
             self._maybe_rearm()
             return
@@ -256,6 +301,10 @@ class DesktopApp(QObject):
         默认关闭（wake_rearm_seconds = 0）：用户按了键就是要看屏幕，不该
         在几秒后又黑下来。
         """
+        if self._manual_blackout:
+            # 一键黑屏是"我现在就要屏幕黑着"，人既然按键了就是回来了，
+            # 不该再按"人还不在"的逻辑把它盖回去。
+            return
         try:
             wait = float(self.cfg["wake_rearm_seconds"])
         except (TypeError, ValueError):
@@ -298,8 +347,14 @@ class DesktopApp(QObject):
         self.cfg["enabled"] = want
         self._overlay_dismissed = False
         if want:
+            # 手动黑屏期间检测是停的；重新启用检测就该回到正常逻辑，
+            # 让看门狗按"是否离开"来决定遮罩，而不是一直被手动标志绑着。
+            self._manual_blackout = False
             self.detector.resume()
         else:
+            # 任何"被暂停"（手动、定时计划）都同时结束一键黑屏态，
+            # 否则看门狗会因为手动标志把遮罩重新盖回来，暂停等于没暂停。
+            self._manual_blackout = False
             self.overlay.hide_overlay(animate=False)
             self._restore_pay_widget()
             self.detector.pause()

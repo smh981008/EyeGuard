@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 APP_NAME = "视线守卫"
-APP_VERSION = "1.5.0"
+APP_VERSION = "1.6.0"
 
 
 def app_root() -> Path:
@@ -114,6 +114,11 @@ DEFAULTS = {
     "pay_start2": "14:00",
     "pay_end2": "17:30",
 
+    # 一键：暂停检测 + 立刻黑屏。托盘、悬浮窗右键、设置页都有入口，
+    # 这里只控制"全局快捷键 Ctrl+Alt+B"这条额外通路的开关。
+    # 默认关：它会在任何程序里生效，别人可能不想要这个副作用。
+    "onekey_hotkey": False,
+
     # 其他
     "show_preview": False,
     "preview_mirror": True,
@@ -126,10 +131,10 @@ DEFAULTS = {
     "active_profile": "",           # 最近一次保存/套用的方案名
 
     # 配置结构版本，用于升级时修正历史遗留的极端参数
-    "config_version": 10,
+    "config_version": 11,
 }
 
-CONFIG_VERSION = 10
+CONFIG_VERSION = 11
 
 # v2 时期的黑屏提示文案，升级时替换掉
 _OLD_HINT = "按 ESC 可手动关闭"
@@ -216,6 +221,11 @@ def _migrate(data: dict) -> dict:
     if version < 10:
         # v10 悬浮窗可以"点得穿过去"。默认不穿透，保持原来的手感。
         data.setdefault("pay_widget_clickthrough", 0)
+
+    if version < 11:
+        # v11 加了"一键暂停检测并黑屏"。全局快捷键默认关——它会在任何
+        # 程序里生效，不该在升级时悄悄改变用户键盘上的含义。
+        data.setdefault("onekey_hotkey", False)
 
     data["config_version"] = CONFIG_VERSION
     return data

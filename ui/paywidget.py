@@ -599,6 +599,7 @@ class PayWidget(QWidget):
             self._ct_acts.append(a)
 
         menu.addSeparator()
+        act_blackout = menu.addAction("关闭检测并黑屏")
         act_skin = menu.addAction("调整外观（颜色 / 透明度）…")
         act_settings = menu.addAction("打开设置")
         act_hide = menu.addAction("隐藏悬浮窗")
@@ -621,6 +622,8 @@ class PayWidget(QWidget):
             if self.cfg["pay_widget_autohide"]:
                 self.peek()          # 先亮一下，告诉人"我还在这"
             self._sync_settings()
+        elif picked == act_blackout:
+            self.app.pause_and_blackout()
         elif picked == act_skin:
             self.app.open_settings(PAY_TAB)
         elif picked in getattr(self, "_ct_acts", []):
